@@ -323,32 +323,80 @@ class RunManager:
         
         net.eval()
 
-        losses = AverageMeter()
-        top1 = AverageMeter()
-        top5 = AverageMeter()
+        # losses = AverageMeter()
+        # top1 = AverageMeter()
+        # top5 = AverageMeter()
+
+        n_classes=len(data_loader)
+        losses = [AverageMeter() for k in range(n_classes)]
+        top1 = [AverageMeter() for k in range(n_classes)]
+        top5 = [AverageMeter() for k in range(n_classes)]
 
         with torch.no_grad():
             with tqdm(total=len(data_loader),
                       desc='Validate Epoch #{} {}'.format(epoch + 1, run_str), disable=no_logs) as t:
-                for i, (images, labels) in enumerate(data_loader):
-                    images, labels = images.to(self.device), labels.to(self.device)
+                n_classes=len(data_loader)
+                ngpu = 1         #手动
+                valid_size = [30,30,30,30,30]  #手动
+                for i,all_in in enumerate(zip(*data_loader)):
+                    inputs, target = zip(*[all_in[k] for k in range(n_classes)])
+                    slice_pt = 0
+                    slice_idx = [0]
+                    for l in [p.size(0) for p in inputs]:
+                        slice_pt += l // ngpu
+                        slice_idx.append(slice_pt)
+                    organized_input = []
+                    organized_target = []
+                    for ng in range(ngpu):
+                        for t in range(len(inputs)):
+                            bs = train_batch_size[t] // ngpu
+                            organized_input.append(inputs[t][ng * bs : (ng + 1) * bs, ...])
+                            organized_target.append(target[t][ng * bs : (ng + 1) * bs, ...])
+                    inputs = torch.cat(organized_input, dim=0)
+                    target = torch.cat(organized_target, dim=0)
+                    images, labels = inputs.to(self.device), target.to(self.device)
+                
+                # for i, (images, labels) in enumerate(data_loader):
+                #     images, labels = images.to(self.device), labels.to(self.device)
                     # compute output
-                    output = net(images)
-                    loss = self.test_criterion(output, labels)
+                    output, target_slice = net(images, labels, slice_idx)
+                    loss = [self.test_criterion(op, lb) for op, lb in zip(output, target_slice)]
+                    acc1 = [accuracy(output[k], target_slice[k]) for k in range(n_classes)]
+                    acc5 = [accuracy(output[k], target_slice[k],topk(min(5,output[k].shape[1]))) for k in range(n_classes)]
+                    # output = net(images)
+                    # loss = self.test_criterion(output, labels)
                     # measure accuracy and record loss
-                    acc1, acc5 = accuracy(output, labels, topk=(1, 5))
+                    # acc1, acc5 = accuracy(output, labels, topk=(1, 5))
 
-                    losses.update(loss.item(), images.size(0))
-                    top1.update(acc1[0].item(), images.size(0))
-                    top5.update(acc5[0].item(), images.size(0))
+                    loss_tem,top1_tem,top5_tem = [],[],[]
+                    for k in range(len(n_classes)):
+                        loss_temp = loss[k].cpu().detach().numpy()
+                        top1_temp = acc1[k][0].cpu().detach().numpy()
+                        top5_temp = acc5[k][0].cpu().detach().numpy()
+                        losses[k].update(loss_temp.mean(),images.size(0))
+                        top1[k].update(top1_temp.mean(), images.size(0))
+                        top5[k].update(top5_temp.mean(), images.size(0))
+                        loss_tem.append(losses[k].val) 
+                        top1_tem.append(top1[k].val)
+                        top5_tem.append(top5[k].val)
                     t.set_postfix({
-                        'loss': losses.avg,
-                        'top1': top1.avg,
-                        'top5': top5.avg,
+                        'loss': np.mean(loss_tem),
+                        'top1': np.mean(top1_tem),
+                        'top5': np.mean(top5_tem),
                         'img_size': images.size(2),
                     })
+
+                    # losses.update(loss.item(), images.size(0))
+                    # top1.update(acc1[0].item(), images.size(0))
+                    # top5.update(acc5[0].item(), images.size(0))
+                    # t.set_postfix({
+                    #     'loss': losses.avg,
+                    #     'top1': top1.avg,
+                    #     'top5': top5.avg,
+                    #     'img_size': images.size(2),
+                    # })
                     t.update(1)
-        return losses.avg, top1.avg, top5.avg
+        return [losses[k].avg.item() for k in range(n_classes)], [top1[k].avg.item() for k in range(n_classes)], [top5[k].avg.item() for k in range(n_classes)]
 
     def validate_all_resolution(self, epoch=0, is_test=True, net=None):
         if net is None:
@@ -371,6 +419,8 @@ class RunManager:
     def train_one_epoch(self, args, epoch, warmup_epochs=0, warmup_lr=0):
         # switch to train mode
         self.net.train()
+        import pdb
+        pdb.set_trace()
 
         nBatch = len(self.run_config.train_loader)
 
@@ -382,7 +432,28 @@ class RunManager:
         with tqdm(total=nBatch,
                   desc='Train Epoch #{}'.format(epoch + 1)) as t:
             end = time.time()
-            for i, (images, labels) in enumerate(self.run_config.train_loader):
+
+            n_classes=len(data_loader)
+            ngpu = 1         #手动
+            train_batch_size = [30,30,30,30,30]  #手动
+            for i,all_in in enumerate(zip(*data_loader)):
+                inputs, target = zip(*[all_in[k] for k in range(n_classes)])
+                slice_pt = 0
+                slice_idx = [0]
+                for l in [p.size(0) for p in inputs]:
+                    slice_pt += l // ngpu
+                    slice_idx.append(slice_pt)
+                organized_input = []
+                organized_target = []
+                for ng in range(ngpu):
+                    for t in range(len(inputs)):
+                        bs = train_batch_size[t] // ngpu
+                        organized_input.append(inputs[t][ng * bs : (ng + 1) * bs, ...])
+                        organized_target.append(target[t][ng * bs : (ng + 1) * bs, ...])
+                inputs = torch.cat(organized_input, dim=0)
+                target = torch.cat(organized_target, dim=0)
+
+            # for i, (images, labels) in enumerate(self.run_config.train_loader):
                 data_time.update(time.time() - end)
                 if epoch < warmup_epochs:
                     new_lr = self.run_config.warmup_adjust_learning_rate(
@@ -391,7 +462,8 @@ class RunManager:
                 else:
                     new_lr = self.run_config.adjust_learning_rate(self.optimizer, epoch - warmup_epochs, i, nBatch)
 
-                images, labels = images.to(self.device), labels.to(self.device)
+                # images, labels = images.to(self.device), labels.to(self.device)
+                images, labels = inputs.to(self.device), target.to(self.device)
                 target = labels
 
                 # soft target

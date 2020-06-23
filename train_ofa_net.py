@@ -79,8 +79,8 @@ args.manual_seed = 0
 
 args.lr_schedule_type = 'cosine'
 
-args.base_batch_size = 64
-args.valid_size = 10000
+args.base_batch_size = [30,30,30,30,30] #64
+args.valid_size = [30,30,30,30,30]  #10000
 
 args.opt_type = 'sgd'
 args.momentum = 0.9
@@ -96,8 +96,8 @@ args.print_frequency = 10
 
 args.n_worker = 8
 args.resize_scale = 0.08
-args.distort_color = 'tf'
-args.image_size = '128,160,192,224'
+args.distort_color = 'torch' #'tf'
+args.image_size = '112'        #'128,160,192,224'
 args.continuous_size = True
 args.not_sync_distributed_image_size = False
 
@@ -110,9 +110,10 @@ args.width_mult_list = '1.0'
 args.dy_conv_scaling_mode = 1
 args.independent_distributed_sampling = False
 
-args.kd_ratio = 1.0
+args.kd_ratio = 0.0 #1.0
 args.kd_type = 'ce'
 
+args.dataset = 'muilt_data'
 
 if __name__ == '__main__':
     os.makedirs(args.path, exist_ok=True)
@@ -121,11 +122,11 @@ if __name__ == '__main__':
     hvd.init()
     # Pin GPU to be used to process local rank (one GPU per process)
     torch.cuda.set_device(hvd.local_rank())
-
-    args.teacher_path = download_url(
-        'https://hanlab.mit.edu/files/OnceForAll/ofa_checkpoints/ofa_D4_E6_K7',
-        model_dir='.torch/ofa_checkpoints/%d' % hvd.rank()
-    )
+ 
+    # args.teacher_path = download_url(
+    #     'https://hanlab.mit.edu/files/OnceForAll/ofa_checkpoints/ofa_D4_E6_K7',
+    #     model_dir='.torch/ofa_checkpoints/%d' % hvd.rank()
+    # )
 
     num_gpus = hvd.size()
 
@@ -151,7 +152,7 @@ if __name__ == '__main__':
     if args.warmup_lr < 0:
         args.warmup_lr = args.base_lr
     args.train_batch_size = args.base_batch_size
-    args.test_batch_size = args.base_batch_size * 4
+    args.test_batch_size = args.base_batch_size * 1  #4
     run_config = DistributedImageNetRunConfig(**args.__dict__, num_replicas=num_gpus, rank=hvd.rank())
 
     # print run config information
@@ -200,7 +201,7 @@ if __name__ == '__main__':
     # training
     from elastic_nn.training.progressive_shrinking import validate, train
 
-    validate_func_dict = {'image_size_list': {224} if isinstance(args.image_size, int) else sorted({160, 224}),
+    validate_func_dict = {'image_size_list': {112} if isinstance(args.image_size, int) else sorted({160, 224}), #224
                           'width_mult_list': sorted({0, len(args.width_mult_list) - 1}),
                           'ks_list': sorted({min(args.ks_list), max(args.ks_list)}),
                           'expand_ratio_list': sorted({min(args.expand_list), max(args.expand_list)}),

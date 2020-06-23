@@ -6,7 +6,8 @@ import copy
 import random
 
 import torch
-
+import sys #调试用
+sys.path.insert(0,'../../') #调试用
 from elastic_nn.modules.dynamic_layers import DynamicMBConvLayer, DynamicConvLayer, DynamicLinearLayer
 from layers import ConvLayer, IdentityLayer, LinearLayer, MBInvertedConvLayer
 from imagenet_codebase.networks.mobilenet_v3 import MobileNetV3, MobileInvertedResidualBlock
@@ -113,11 +114,20 @@ class OFAMobileNetV3(MobileNetV3):
                 use_bn=False, act_func='h_swish',
             )
         if len(set(last_channel)) == 1:
-            classifier = LinearLayer(max(last_channel), n_classes, dropout_rate=dropout_rate)
+            if type(n_classes) == list:
+                classifier = [LinearLayer(max(last_channel), n_classes[k], dropout_rate=dropout_rate) for k in range(len(n_classes))]
+            else:
+                classifier = LinearLayer(max(last_channel), n_classes, dropout_rate=dropout_rate)
         else:
-            classifier = DynamicLinearLayer(
+            if type(n_classes) == list:
+                classifier = [DynamicLinearLayer(
+                in_features_list=last_channel, out_features=n_classes, bias=True, dropout_rate=dropout_rate
+            ) for k in range(len(n_classes))]
+            else:
+                classifier = DynamicLinearLayer(
                 in_features_list=last_channel, out_features=n_classes, bias=True, dropout_rate=dropout_rate
             )
+
         super(OFAMobileNetV3, self).__init__(first_conv, blocks, final_expand_layer, feature_mix_layer, classifier)
 
         # set bn param
@@ -132,7 +142,7 @@ class OFAMobileNetV3(MobileNetV3):
     def name():
         return 'OFAMobileNetV3'
 
-    def forward(self, x):
+    def forward(self, x, labels=None, slice_idx=None, eval_mode=False):
         # first conv
         x = self.first_conv(x)
         # first block
@@ -149,8 +159,23 @@ class OFAMobileNetV3(MobileNetV3):
         x = x.mean(3, keepdim=True).mean(2, keepdim=True)  # global average pooling
         x = self.feature_mix_layer(x)
         x = torch.squeeze(x)
-        x = self.classifier(x)
-        return x
+
+        if type(self.classifier) == torch.nn.modules.container.ModuleList or type(self.classifier) == list:
+            if labels is not None:
+                target_slice = [labels[slice_idx[k]:slice_idx[k+1]] for k in range(len(self.classifier))]
+            if eval_mode:
+                x = [self.classifier[k](x) for k in range(len(self.classifier))] 
+            else:
+                if slice_idx is not None:
+                    x = [self.classifier[k](x[slice_idx[k]:slice_idx[k+1], ...]) for k in range(len(self.classifier))]
+                else:
+                    x = [self.classifier[k](x) for k in range(len(self.classifier))] 
+            if labels is not None:
+                return x, target_slice
+            else:
+                return x
+        else:
+            x = self.classifier(x)
 
     @property
     def module_str(self):
@@ -165,11 +190,21 @@ class OFAMobileNetV3(MobileNetV3):
 
         _str += self.final_expand_layer.module_str + '\n'
         _str += self.feature_mix_layer.module_str + '\n'
-        _str += self.classifier.module_str + '\n'
+        if type(self.classifier) == torch.nn.modules.container.ModuleList or type(self.classifier) == list:
+            for k in range(len(self.classifier)):
+                _str += self.classifier[k].module_str + '\n'
+        else:
+            _str += self.classifier.module_str + '\n'
         return _str
 
     @property
     def config(self):
+        import pdb
+        pdb.set_trace()
+        if type(self.classifier) == list:
+            classifer = [self.classifier[k].config for k in range(len(self.classifier))]
+        else:
+            classifer = self.classifier.config
         return {
             'name': OFAMobileNetV3.__name__,
             'bn': self.get_bn_param(),
@@ -179,7 +214,8 @@ class OFAMobileNetV3(MobileNetV3):
             ],
             'final_expand_layer': self.final_expand_layer.config,
             'feature_mix_layer': self.feature_mix_layer.config,
-            'classifier': self.classifier.config,
+            # 'classifier': self.classifier.config,
+            'classifier': classifer,
         }
 
     @staticmethod
@@ -321,3 +357,10 @@ class OFAMobileNetV3(MobileNetV3):
     def re_organize_middle_weights(self, expand_ratio_stage=0):
         for block in self.blocks[1:]:
             block.mobile_inverted_conv.re_organize_middle_weights(expand_ratio_stage)
+
+if __name__ == '__main__':
+    # import hiddenlayer as hl
+    from torchsummary import summary
+    model = OFAMobileNetV3(n_classes=[10,100],width_mult_list=1.0, ks_list=[3, 5, 7], expand_ratio_list=[3, 4, 6], depth_list=[2, 3, 4])
+    print(model)
+    summary(model, (3, 112, 112),device='cpu')

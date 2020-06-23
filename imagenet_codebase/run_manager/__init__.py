@@ -3,7 +3,9 @@
 # International Conference on Learning Representations (ICLR), 2020.
 
 from imagenet_codebase.run_manager.run_manager import *
-from imagenet_codebase.data_providers.imagenet import *
+# from imagenet_codebase.data_providers.imagenet import *
+# from imagenet_codebase.data_providers.wm_data import *
+from imagenet_codebase.data_providers.muilt_data import *
 
 
 class ImagenetRunConfig(RunConfig):

@@ -5,6 +5,8 @@
 import copy
 import torch
 
+# import sys  #调试用
+# sys.path.insert(0,'../../') #调试用
 from layers import *
 from imagenet_codebase.utils import MyNetwork, make_divisible
 from imagenet_codebase.networks.proxyless_nets import MobileInvertedResidualBlock
@@ -19,9 +21,12 @@ class MobileNetV3(MyNetwork):
         self.blocks = nn.ModuleList(blocks)
         self.final_expand_layer = final_expand_layer
         self.feature_mix_layer = feature_mix_layer
-        self.classifier = classifier
+        if type(classifier) == list:
+            self.classifier = nn.ModuleList(classifier)
+        else:
+            self.classifier = classifier
 
-    def forward(self, x):
+    def forward(self, x, labels=None, slice_idx=None, eval_mode=False):
         x = self.first_conv(x)
         for block in self.blocks:
             x = block(x)
@@ -29,8 +34,23 @@ class MobileNetV3(MyNetwork):
         x = x.mean(3, keepdim=True).mean(2, keepdim=True)  # global average pooling
         x = self.feature_mix_layer(x)
         x = torch.squeeze(x)
-        x = self.classifier(x)
-        return x
+        # x = self.classifier(x)
+        if type(self.classifier) == torch.nn.modules.container.ModuleList or type(self.classifier) == list:
+            if labels is not None:
+                target_slice = [labels[slice_idx[k]:slice_idx[k+1]] for k in range(len(self.classifier))]
+            if eval_mode:
+                x = [self.classifier[k](x) for k in range(len(self.classifier))] 
+            else:
+                if slice_idx is not None:
+                    x = [self.classifier[k](x[slice_idx[k]:slice_idx[k+1], ...]) for k in range(len(self.classifier))]
+                else:
+                    x = [self.classifier[k](x) for k in range(len(self.classifier))] 
+            if labels is not None:
+                return x, target_slice
+            else:
+                return x
+        else:
+            x = self.classifier(x)
 
     @property
     def module_str(self):
@@ -39,11 +59,20 @@ class MobileNetV3(MyNetwork):
             _str += block.module_str + '\n'
         _str += self.final_expand_layer.module_str + '\n'
         _str += self.feature_mix_layer.module_str + '\n'
-        _str += self.classifier.module_str
+        # _str += self.classifier.module_str
+        import pdb
+        pdb.set_trace()
+        if type(self.classifier) == torch.nn.modules.container.ModuleList or type(self.classifier) == list:
+            for k in range(len(self.classifier)):
+                _str += self.classifier[k].module_str + '\n'
+        else:
+            _str += self.classifier.module_str + '\n'
         return _str
 
     @property
     def config(self):
+        import pdb
+        pdb.set_trace()
         return {
             'name': MobileNetV3.__name__,
             'bn': self.get_bn_param(),
@@ -61,6 +90,8 @@ class MobileNetV3(MyNetwork):
         first_conv = set_layer_from_config(config['first_conv'])
         final_expand_layer = set_layer_from_config(config['final_expand_layer'])
         feature_mix_layer = set_layer_from_config(config['feature_mix_layer'])
+        import pdb
+        pdb.set_trace()
         classifier = set_layer_from_config(config['classifier'])
 
         blocks = []
@@ -111,6 +142,8 @@ class MobileNetV3(MyNetwork):
             feature_dim, last_channel, kernel_size=1, bias=False, use_bn=False, act_func='h_swish',
         )
         # classifier
+        import pdb
+        pdb.set_trace()
         classifier = LinearLayer(last_channel, n_classes, dropout_rate=dropout_rate)
 
         return first_conv, blocks, final_expand_layer, feature_mix_layer, classifier
@@ -188,3 +221,10 @@ class MobileNetV3Large(MobileNetV3):
         super(MobileNetV3Large, self).__init__(first_conv, blocks, final_expand_layer, feature_mix_layer, classifier)
         # set bn param
         self.set_bn_param(momentum=bn_param[0], eps=bn_param[1])
+
+if __name__ == '__main__':
+    # import hiddenlayer as hl
+    from torchsummary import summary
+    model = MobileNetV3()
+    print(model)
+    summary(model, (3, 112, 112),device='cpu')

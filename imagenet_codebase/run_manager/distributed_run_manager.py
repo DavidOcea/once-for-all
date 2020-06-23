@@ -10,6 +10,7 @@ import torch.backends.cudnn as cudnn
 from imagenet_codebase.utils import *
 from imagenet_codebase.run_manager import RunConfig
 from imagenet_codebase.data_providers.base_provider import MyRandomResizedCrop
+import numpy as np
     
 
 class DistributedRunManager:
@@ -183,33 +184,83 @@ class DistributedRunManager:
 
         net.eval()
 
-        losses = DistributedMetric('val_loss')
-        top1 = DistributedMetric('val_top1')
-        top5 = DistributedMetric('val_top5')
+        # losses = DistributedMetric('val_loss')
+        # top1 = DistributedMetric('val_top1')
+        # top5 = DistributedMetric('val_top5')
+
+        n_classes=len(data_loader)
+        losses = [AverageMeter() for k in range(n_classes)]
+        top1 = [AverageMeter() for k in range(n_classes)]
+        top5 = [AverageMeter() for k in range(n_classes)]
 
         with torch.no_grad():
             with tqdm(total=len(data_loader),
                       desc='Validate Epoch #{} {}'.format(epoch + 1, run_str),
                       disable=no_logs or not self.is_root) as t:
-                for i, (images, labels) in enumerate(data_loader):
-                    images, labels = images.cuda(), labels.cuda()
+                
+                ngpu = 1         #手动
+                valid_size = [30,30,30,30,30]  #手动
+                for i,all_in in enumerate(zip(*data_loader)):
+                    inputs, target = zip(*[all_in[k] for k in range(n_classes)])
+                    slice_pt = 0
+                    slice_idx = [0]
+                    for l in [p.size(0) for p in inputs]:
+                        slice_pt += l // ngpu
+                        slice_idx.append(slice_pt)
+                    organized_input = []
+                    organized_target = []
+                    for ng in range(ngpu):
+                        for n in range(len(inputs)):
+                            bs = valid_size[n] // ngpu
+                            organized_input.append(inputs[n][ng * bs : (ng + 1) * bs, ...])
+                            organized_target.append(target[n][ng * bs : (ng + 1) * bs, ...])
+                    inputs = torch.cat(organized_input, dim=0)
+                    target = torch.cat(organized_target, dim=0)
+                    images, labels = inputs.cuda(), target.cuda()
+                
+                # for i, (images, labels) in enumerate(data_loader):
+                #     images, labels = images.cuda(), labels.cuda()
                     # compute output
-                    output = net(images)
-                    loss = self.test_criterion(output, labels)
+                    # output = net(images)
+                    output, target_slice = net(images, labels, slice_idx)
+                    # loss = self.test_criterion(output, labels)
+                    loss = [self.test_criterion(op, lb) for op, lb in zip(output, target_slice)]
                     # measure accuracy and record loss
-                    acc1, acc5 = accuracy(output, labels, topk=(1, 5))
+                    # acc1, acc5 = accuracy(output, labels, topk=(1, 5))
+                    import pdb
+                    pdb.set_trace()
+                    acc1 = [accuracy(output[k], target_slice[k]) for k in range(n_classes)]
+                    acc5 = [accuracy(output[k], target_slice[k],topk=(min(5,output[k].shape[1]-1))) for k in range(n_classes)]
+
+                    loss_tem,top1_tem,top5_tem = [],[],[]
+                    for k in range(n_classes):
+                        loss_temp = loss[k].cpu().detach().numpy()
+                        top1_temp = acc1[k][0].cpu().detach().numpy()
+                        top5_temp = acc5[k][0].cpu().detach().numpy()
+                        losses[k].update(loss_temp.mean(),images.size(0))
+                        top1[k].update(top1_temp.mean(), images.size(0))
+                        top5[k].update(top5_temp.mean(), images.size(0))
+                        loss_tem.append(losses[k].val) 
+                        top1_tem.append(top1[k].val)
+                        top5_tem.append(top5[k].val)
             
-                    losses.update(loss, images.size(0))
-                    top1.update(acc1[0], images.size(0))
-                    top5.update(acc5[0], images.size(0))
                     t.set_postfix({
-                        'loss': losses.avg.item(),
-                        'top1': top1.avg.item(),
-                        'top5': top5.avg.item(),
+                        'loss': np.mean(loss_tem),
+                        'top1': np.mean(top1_tem),
+                        'top5': np.mean(top5_tem),
                         'img_size': images.size(2),
                     })
+                    # losses.update(loss, images.size(0))
+                    # top1.update(acc1[0], images.size(0))
+                    # top5.update(acc5[0], images.size(0))
+                    # t.set_postfix({
+                    #     'loss': losses.avg.item(),
+                    #     'top1': top1.avg.item(),
+                    #     'top5': top5.avg.item(),
+                    #     'img_size': images.size(2),
+                    # })
                     t.update(1)
-        return losses.avg.item(), top1.avg.item(), top5.avg.item()
+        return [losses[k].avg.item() for k in range(n_classes)], [top1[k].avg.item() for k in range(n_classes)], [top5[k].avg.item() for k in range(n_classes)]
     
     def validate_all_resolution(self, epoch=0, is_test=True, net=None):
         if net is None:
@@ -221,9 +272,9 @@ class DistributedRunManager:
                 self.run_config.data_provider.assign_active_img_size(img_size)
                 self.reset_running_statistics(net=net)
                 loss, top1, top5 = self.validate(epoch, is_test, net=net)
-                loss_list.append(loss)
-                top1_list.append(top1)
-                top5_list.append(top5)
+                loss_list.append(np.mean(loss))
+                top1_list.append(np.mean(top1))
+                top5_list.append(np.mean(top5))
             return img_size_list, loss_list, top1_list, top5_list
         else:
             loss, top1, top5 = self.validate(epoch, is_test, net=net)
@@ -245,6 +296,8 @@ class DistributedRunManager:
                   desc='Train Epoch #{}'.format(epoch + 1),
                   disable=not self.is_root) as t:
             end = time.time()
+            import pdb
+            pdb.set_trace()
             for i, (images, labels) in enumerate(self.run_config.train_loader):
                 data_time.update(time.time() - end)
                 if epoch < warmup_epochs:
@@ -257,6 +310,8 @@ class DistributedRunManager:
                 images, labels = images.cuda(), labels.cuda()
                 target = labels
 
+                import pdb
+                pdb.set_trace()
                 # soft target
                 if args.teacher_model is not None:
                     args.teacher_model.train()
@@ -305,6 +360,8 @@ class DistributedRunManager:
     
     def train(self, args, warmup_epochs=5, warmup_lr=0):
         for epoch in range(self.start_epoch, self.run_config.n_epochs + warmup_epochs):
+            import pdb
+            pdb.set_trace()
             train_loss, train_top1, train_top5 = self.train_one_epoch(args, epoch, warmup_epochs, warmup_lr)
             img_size, val_loss, val_top1, val_top5 = self.validate_all_resolution(epoch, is_test=False)
         

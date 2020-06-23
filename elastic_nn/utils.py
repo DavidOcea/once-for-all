@@ -52,8 +52,29 @@ def set_running_statistics(model, data_loader, distributed=False):
     
     with torch.no_grad():
         DynamicBatchNorm2d.SET_RUNNING_STATISTICS = True
-        for images, labels in data_loader:
-            images = images.to(get_net_device(forward_model))
+        n_classes=len(data_loader)
+        ngpu = 1         #手动
+        train_batch_size = [64,64,64,64,64]  #手动
+        for i,all_in in enumerate(zip(*data_loader)):
+            inputs, target = zip(*[all_in[k] for k in range(n_classes)])
+            slice_pt = 0
+            slice_idx = [0]
+            for l in [p.size(0) for p in inputs]:
+                slice_pt += l // ngpu
+                slice_idx.append(slice_pt)
+            organized_input = []
+            organized_target = []
+            for ng in range(ngpu):
+                for t in range(len(inputs)):
+                    bs = train_batch_size[t] // ngpu
+                    organized_input.append(inputs[t][ng * bs : (ng + 1) * bs, ...])
+                    organized_target.append(target[t][ng * bs : (ng + 1) * bs, ...])
+            inputs = torch.cat(organized_input, dim=0)
+            target = torch.cat(organized_target, dim=0)
+            images = inputs.to(get_net_device(forward_model))
+
+        # for images, labels in data_loader:
+        #     images = images.to(get_net_device(forward_model))
             forward_model(images)
         DynamicBatchNorm2d.SET_RUNNING_STATISTICS = False
     
